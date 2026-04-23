@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { AgentConfig, LlmProvider, ModelOption } from '../types.ts';
-import { fetchProviderModels, getAgentConfig, updateAgentConfig } from '../services/providerConfigService.ts';
+import {
+  clearAdminPassword,
+  fetchProviderModels,
+  getAgentConfig,
+  hasAdminPassword,
+  setAdminPassword,
+  updateAgentConfig
+} from '../services/providerConfigService.ts';
 
 interface AdminConfigPageProps {
   onConfigUpdated?: (config: AgentConfig) => void;
@@ -24,16 +31,23 @@ export const AdminConfigPage: React.FC<AdminConfigPageProps> = ({ onConfigUpdate
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [adminPassword, setAdminPasswordInput] = useState('');
+  const [authenticated, setAuthenticated] = useState<boolean>(hasAdminPassword());
 
-  const loadConfig = async () => {
+  const loadConfig = async (): Promise<boolean> => {
     setLoading(true);
     setError('');
     try {
       const loaded = await getAgentConfig();
       setConfig(loaded);
       onConfigUpdated?.(loaded);
+      return true;
     } catch (err: any) {
       setError(err?.message || 'Failed to load config');
+      if (`${err?.message || ''}`.includes('401')) {
+        setAuthenticated(false);
+      }
+      return false;
     } finally {
       setLoading(false);
     }
@@ -53,10 +67,35 @@ export const AdminConfigPage: React.FC<AdminConfigPageProps> = ({ onConfigUpdate
   };
 
   useEffect(() => {
-    loadConfig();
     loadModels('gemini');
     loadModels('customOpenAI');
+    if (authenticated) {
+      loadConfig();
+    }
   }, []);
+
+  const handleAdminLogin = async () => {
+    setError('');
+    setMessage('');
+    setAdminPassword(adminPassword);
+
+    const ok = await loadConfig();
+    if (ok) {
+      setAuthenticated(true);
+      setAdminPasswordInput('');
+      setMessage('Admin login successful.');
+    } else {
+      clearAdminPassword();
+      setAuthenticated(false);
+      setError((prev) => prev || 'Admin login failed');
+    }
+  };
+
+  const handleAdminLogout = () => {
+    clearAdminPassword();
+    setAuthenticated(false);
+    setMessage('Logged out from admin mode.');
+  };
 
   const saveConfig = async () => {
     setSaving(true);
@@ -75,13 +114,42 @@ export const AdminConfigPage: React.FC<AdminConfigPageProps> = ({ onConfigUpdate
     }
   };
 
+  if (!authenticated) {
+    return (
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4 max-w-xl mx-auto">
+        <h2 className="text-lg font-semibold">Admin Login Required</h2>
+        <p className="text-sm text-slate-600">Only admin tab requires login. Enter admin password to manage providers/config.</p>
+        <input
+          type="password"
+          value={adminPassword}
+          onChange={(e) => setAdminPasswordInput(e.target.value)}
+          placeholder="Admin password"
+          className="w-full border border-slate-300 rounded px-3 py-2"
+        />
+        <button
+          onClick={handleAdminLogin}
+          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded"
+          disabled={!adminPassword.trim()}
+        >
+          Login to Admin
+        </button>
+        {error && <div className="text-sm text-red-600">{error}</div>}
+      </div>
+    );
+  }
+
   return (
     <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Admin · Agent Provider Config</h2>
-        <button onClick={loadConfig} className="text-sm px-3 py-1 rounded bg-slate-100 hover:bg-slate-200" disabled={loading}>
-          Reload
-        </button>
+        <div className="flex gap-2">
+          <button onClick={loadConfig} className="text-sm px-3 py-1 rounded bg-slate-100 hover:bg-slate-200" disabled={loading}>
+            Reload
+          </button>
+          <button onClick={handleAdminLogout} className="text-sm px-3 py-1 rounded bg-red-50 text-red-700 hover:bg-red-100">
+            Logout
+          </button>
+        </div>
       </div>
 
       {error && <div className="text-sm text-red-600">{error}</div>}

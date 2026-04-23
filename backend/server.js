@@ -37,6 +37,7 @@ if (!PROXY_HEADER) {
 }
 
 const SECRET_KEY = process?.env?.SECRET_KEY || '';
+const ADMIN_PASSWORD = process?.env?.ADMIN_PASSWORD || '';
 const FEEDBACK_COLLECTION = process?.env?.FEEDBACK_COLLECTION || 'ohm_feedback_events';
 const MEMORY_COLLECTION = process?.env?.MEMORY_COLLECTION || 'ohm_memory_entries';
 const SESSION_COLLECTION = process?.env?.SESSION_COLLECTION || 'ohm_session_memory';
@@ -235,6 +236,32 @@ function requireSecretKey(req, res, next) {
   }
 
   next();
+}
+
+function requireAdminAuth(req, res, next) {
+  if (!ADMIN_PASSWORD) {
+    return res.status(503).json({ error: 'admin_auth_not_configured' });
+  }
+
+  const headerPassword = req.headers['x-admin-password'];
+  if (headerPassword && headerPassword === ADMIN_PASSWORD) {
+    return next();
+  }
+
+  const auth = req.headers.authorization || '';
+  if (auth.startsWith('Basic ')) {
+    try {
+      const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
+      const [, password] = decoded.split(':');
+      if (password === ADMIN_PASSWORD) {
+        return next();
+      }
+    } catch (_err) {
+      // ignore malformed basic auth
+    }
+  }
+
+  return res.status(401).json({ error: 'admin_auth_required' });
 }
 
 const DEFAULT_AGENT_CONFIG = {
@@ -574,7 +601,7 @@ app.get('/healthz', (_req, res) => {
   res.json({ ok: true, service: 'ohm-agent-backend' });
 });
 
-app.get('/admin/config', requireSecretKey, async (_req, res) => {
+app.get('/admin/config', requireAdminAuth, async (_req, res) => {
   try {
     const config = await getAgentConfig();
     return res.json({ config: sanitizeConfigForClient(config) });
@@ -584,7 +611,7 @@ app.get('/admin/config', requireSecretKey, async (_req, res) => {
   }
 });
 
-app.post('/admin/config', requireSecretKey, async (req, res) => {
+app.post('/admin/config', requireAdminAuth, async (req, res) => {
   try {
     const body = req.body || {};
     const current = await getAgentConfig();
@@ -620,7 +647,7 @@ app.post('/admin/config', requireSecretKey, async (req, res) => {
   }
 });
 
-app.get('/models', requireSecretKey, async (req, res) => {
+app.get('/models', async (req, res) => {
   try {
     const provider = `${req.query.provider || ''}`;
     const config = await getAgentConfig();
@@ -638,7 +665,7 @@ app.get('/models', requireSecretKey, async (req, res) => {
   }
 });
 
-app.post('/llm/generate-chunks', requireSecretKey, async (req, res) => {
+app.post('/llm/generate-chunks', async (req, res) => {
   try {
     const {
       transcript = '',
@@ -716,7 +743,7 @@ app.post('/llm/generate-chunks', requireSecretKey, async (req, res) => {
   }
 });
 
-app.get('/memory-hints', requireSecretKey, async (req, res) => {
+app.get('/memory-hints', async (req, res) => {
   try {
     const transcript = `${req.query.transcript || ''}`;
     const sessionId = `${req.query.sessionId || ''}`;
@@ -734,7 +761,7 @@ app.get('/memory-hints', requireSecretKey, async (req, res) => {
   }
 });
 
-app.post('/feedback', requireSecretKey, async (req, res) => {
+app.post('/feedback', async (req, res) => {
   try {
     const {
       sessionId,
@@ -833,7 +860,7 @@ app.post('/feedback', requireSecretKey, async (req, res) => {
 });
 
 // --- Proxy Endpoint ---
-app.post('/api-proxy', requireSecretKey, async (req, res) => {
+app.post('/api-proxy', async (req, res) => {
 
   // Check for the custom header added by the shim
   if (req.headers['x-app-proxy'] !== PROXY_HEADER) {
@@ -971,15 +998,6 @@ server.on('upgrade', async (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
   if (url.pathname === '/ws-proxy') {
-    if (SECRET_KEY) {
-      const clientKey = url.searchParams.get('key');
-      if (clientKey !== SECRET_KEY) {
-        console.log('[Node Proxy] Invalid or missing secret key for websocket');
-        socket.destroy();
-        return;
-      }
-    }
-
     let targetUrl = url.searchParams.get('target');
     if (!targetUrl) {
       console.log('[Node Proxy] Missing target URL');

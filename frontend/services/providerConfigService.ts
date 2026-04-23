@@ -1,17 +1,37 @@
 import { AgentConfig, LlmProvider, ModelOption } from '../types.ts';
-import { getAppKeyFromUrl } from './memoryService.ts';
 
-function getHeaders(): HeadersInit {
+const ADMIN_TOKEN_KEY = 'ohm_admin_password';
+
+export function setAdminPassword(password: string) {
+  sessionStorage.setItem(ADMIN_TOKEN_KEY, password);
+}
+
+export function clearAdminPassword() {
+  sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+}
+
+export function hasAdminPassword(): boolean {
+  return Boolean(sessionStorage.getItem(ADMIN_TOKEN_KEY));
+}
+
+function getAdminHeaders(): HeadersInit {
+  const password = sessionStorage.getItem(ADMIN_TOKEN_KEY) || '';
   return {
     'Content-Type': 'application/json',
-    'X-App-Key': getAppKeyFromUrl()
+    'X-Admin-Password': password
+  };
+}
+
+function getPublicHeaders(): HeadersInit {
+  return {
+    'Content-Type': 'application/json'
   };
 }
 
 export async function getAgentConfig(): Promise<AgentConfig> {
   const response = await fetch('/admin/config', {
     method: 'GET',
-    headers: getHeaders()
+    headers: getAdminHeaders()
   });
 
   if (!response.ok) {
@@ -25,7 +45,7 @@ export async function getAgentConfig(): Promise<AgentConfig> {
 export async function updateAgentConfig(payload: Partial<AgentConfig>): Promise<AgentConfig> {
   const response = await fetch('/admin/config', {
     method: 'POST',
-    headers: getHeaders(),
+    headers: getAdminHeaders(),
     body: JSON.stringify(payload)
   });
 
@@ -41,7 +61,7 @@ export async function updateAgentConfig(payload: Partial<AgentConfig>): Promise<
 export async function fetchProviderModels(provider: LlmProvider): Promise<ModelOption[]> {
   const response = await fetch(`/models?provider=${provider}`, {
     method: 'GET',
-    headers: getHeaders()
+    headers: getPublicHeaders()
   });
 
   if (!response.ok) {
