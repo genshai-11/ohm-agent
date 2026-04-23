@@ -609,7 +609,7 @@ async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
     const label = item.label || byPhrase.get(normalizedText)?.label || 'PINK';
     const action = item.action || 'accept';
 
-    if (!text || !textMatchesTranscript(text, transcript)) return;
+    if (!text) return;
 
     const prev = byPhrase.get(normalizedText);
     const scoreBoost = action === 'reject' ? -6 : 8;
