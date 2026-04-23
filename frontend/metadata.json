@@ -1,0 +1,4 @@
+{
+  "name": "OHM Agent",
+  "description": "Frontend integration adapter and testing UI for the OHM Semantic Evaluator Agent. Simulates the backend pipeline using Gemini API."
+}
