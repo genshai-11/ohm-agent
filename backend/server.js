@@ -247,7 +247,6 @@ async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
     ? datastore
         .createQuery(FEEDBACK_COLLECTION)
         .filter('sessionId', '=', sessionId)
-        .order('createdAt', { descending: true })
         .limit(100)
     : null;
 
