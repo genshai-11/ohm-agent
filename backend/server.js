@@ -10,7 +10,7 @@ import { GoogleAuth } from 'google-auth-library';
 import fetch from 'node-fetch';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
-import { Firestore, FieldValue } from '@google-cloud/firestore';
+import { Datastore } from '@google-cloud/datastore';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -40,7 +40,7 @@ const FEEDBACK_COLLECTION = process?.env?.FEEDBACK_COLLECTION || 'ohm_feedback_e
 const MEMORY_COLLECTION = process?.env?.MEMORY_COLLECTION || 'ohm_memory_entries';
 const SESSION_COLLECTION = process?.env?.SESSION_COLLECTION || 'ohm_session_memory';
 
-const firestore = new Firestore({ projectId: GOOGLE_CLOUD_PROJECT });
+const datastore = new Datastore({ projectId: GOOGLE_CLOUD_PROJECT });
 
 // Serve built frontend assets
 app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
@@ -238,26 +238,27 @@ async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
   const normalizedTranscript = normalizeText(transcript);
   if (!normalizedTranscript) return [];
 
-  const [globalSnap, sessionSnap] = await Promise.all([
-    firestore
-      .collection(MEMORY_COLLECTION)
-      .orderBy('supportCount', 'desc')
-      .limit(300)
-      .get(),
-    sessionId
-      ? firestore
-          .collection(FEEDBACK_COLLECTION)
-          .where('sessionId', '==', sessionId)
-          .orderBy('createdAt', 'desc')
-          .limit(100)
-          .get()
-      : Promise.resolve(null)
+  const globalQuery = datastore
+    .createQuery(MEMORY_COLLECTION)
+    .order('supportCount', { descending: true })
+    .limit(300);
+
+  const sessionQuery = sessionId
+    ? datastore
+        .createQuery(FEEDBACK_COLLECTION)
+        .filter('sessionId', '=', sessionId)
+        .order('createdAt', { descending: true })
+        .limit(100)
+    : null;
+
+  const [globalRows, sessionRows] = await Promise.all([
+    datastore.runQuery(globalQuery).then(([rows]) => rows || []),
+    sessionQuery ? datastore.runQuery(sessionQuery).then(([rows]) => rows || []) : Promise.resolve([])
   ]);
 
   const byKey = new Map();
 
-  globalSnap.docs.forEach((doc) => {
-    const item = doc.data();
+  globalRows.forEach((item) => {
     const text = `${item.text || ''}`.trim();
     const label = item.label || 'PINK';
     const normalizedText = normalizeText(text);
@@ -279,30 +280,27 @@ async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
     });
   });
 
-  if (sessionSnap) {
-    sessionSnap.docs.forEach((doc) => {
-      const item = doc.data();
-      const text = `${item.text || ''}`.trim();
-      const label = item.label || 'PINK';
-      const action = item.action || 'accept';
-      const normalizedText = normalizeText(text);
+  sessionRows.forEach((item) => {
+    const text = `${item.text || ''}`.trim();
+    const label = item.label || 'PINK';
+    const action = item.action || 'accept';
+    const normalizedText = normalizeText(text);
 
-      if (!text || !normalizedText || !normalizedTranscript.includes(normalizedText)) return;
+    if (!text || !normalizedText || !normalizedTranscript.includes(normalizedText)) return;
 
-      const key = `${normalizedText}::${label}`;
-      const prev = byKey.get(key);
-      const scoreBoost = action === 'reject' ? -2 : 4;
+    const key = `${normalizedText}::${label}`;
+    const prev = byKey.get(key);
+    const scoreBoost = action === 'reject' ? -2 : 4;
 
-      byKey.set(key, {
-        text,
-        label,
-        source: 'session_feedback',
-        supportCount: Number(prev?.supportCount || 0),
-        rejectCount: Number(prev?.rejectCount || 0),
-        score: Number(prev?.score || 0) + scoreBoost
-      });
+    byKey.set(key, {
+      text,
+      label,
+      source: 'session_feedback',
+      supportCount: Number(prev?.supportCount || 0),
+      rejectCount: Number(prev?.rejectCount || 0),
+      score: Number(prev?.score || 0) + scoreBoost
     });
-  }
+  });
 
   return Array.from(byKey.values())
     .filter((hint) => hint.score >= 0)
@@ -346,8 +344,7 @@ app.post('/feedback', requireSecretKey, async (req, res) => {
       return res.status(400).json({ error: 'sessionId is required' });
     }
 
-    const batch = firestore.batch();
-    const now = FieldValue.serverTimestamp();
+    const now = new Date();
 
     const feedbackItems = [];
 
@@ -375,53 +372,55 @@ app.post('/feedback', requireSecretKey, async (req, res) => {
       return res.status(400).json({ error: 'No feedback payload provided' });
     }
 
-    feedbackItems.forEach((item) => {
-      const feedbackRef = firestore.collection(FEEDBACK_COLLECTION).doc();
-      batch.set(feedbackRef, {
-        sessionId,
-        userId: userId || null,
-        transcript: transcript || '',
-        text: item.text,
-        label: item.label,
-        action: item.action,
-        confidence: item.confidence,
-        createdAt: now
+    for (const item of feedbackItems) {
+      const feedbackKey = datastore.key([FEEDBACK_COLLECTION]);
+      await datastore.save({
+        key: feedbackKey,
+        data: {
+          sessionId,
+          userId: userId || null,
+          transcript: transcript || '',
+          text: item.text,
+          label: item.label,
+          action: item.action,
+          confidence: item.confidence,
+          createdAt: now
+        }
       });
 
-      const memoryRef = firestore.collection(MEMORY_COLLECTION).doc(makeMemoryDocId(item.text, item.label));
+      const memoryKey = datastore.key([MEMORY_COLLECTION, makeMemoryDocId(item.text, item.label)]);
+      const [existingMemory] = await datastore.get(memoryKey);
       const supportIncrement = item.action === 'reject' ? 0 : 1;
       const rejectIncrement = item.action === 'reject' ? 1 : 0;
 
-      batch.set(
-        memoryRef,
-        {
+      await datastore.save({
+        key: memoryKey,
+        data: {
           text: item.text,
           normalizedText: normalizeText(item.text),
           label: item.label,
-          supportCount: FieldValue.increment(supportIncrement),
-          rejectCount: FieldValue.increment(rejectIncrement),
+          supportCount: Number(existingMemory?.supportCount || 0) + supportIncrement,
+          rejectCount: Number(existingMemory?.rejectCount || 0) + rejectIncrement,
           lastSeenSessionId: sessionId,
           updatedAt: now
-        },
-        { merge: true }
-      );
-    });
+        }
+      });
+    }
 
-    const sessionRef = firestore.collection(SESSION_COLLECTION).doc(sessionId);
-    batch.set(
-      sessionRef,
-      {
+    const sessionKey = datastore.key([SESSION_COLLECTION, sessionId]);
+    const [existingSession] = await datastore.get(sessionKey);
+    await datastore.save({
+      key: sessionKey,
+      data: {
         sessionId,
         userId: userId || null,
         lastTranscript: transcript || '',
         lastFeedbackAt: now,
-        feedbackCount: FieldValue.increment(feedbackItems.length),
+        feedbackCount: Number(existingSession?.feedbackCount || 0) + feedbackItems.length,
         updatedAt: now
-      },
-      { merge: true }
-    );
+      }
+    });
 
-    await batch.commit();
     return res.json({ ok: true, saved: feedbackItems.length });
   } catch (error) {
     console.error('[Feedback] Failed to persist feedback', error);
