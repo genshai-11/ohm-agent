@@ -11,12 +11,17 @@ import fetch from 'node-fetch';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Firestore, FieldValue } from '@google-cloud/firestore';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const app = express();
 app.use(express.json({limit: process?.env?.API_PAYLOAD_MAX_SIZE || "7mb"}));
 
-const PORT = process?.env?.API_BACKEND_PORT || 5000;
-const API_BACKEND_HOST = process?.env?.API_BACKEND_HOST || "127.0.0.1";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PORT = process?.env?.PORT || process?.env?.API_BACKEND_PORT || 8080;
+const API_BACKEND_HOST = process?.env?.API_BACKEND_HOST || "0.0.0.0";
 
 const GOOGLE_CLOUD_LOCATION = process?.env?.GOOGLE_CLOUD_LOCATION;
 const GOOGLE_CLOUD_PROJECT = process?.env?.GOOGLE_CLOUD_PROJECT;
@@ -36,6 +41,9 @@ const MEMORY_COLLECTION = process?.env?.MEMORY_COLLECTION || 'ohm_memory_entries
 const SESSION_COLLECTION = process?.env?.SESSION_COLLECTION || 'ohm_session_memory';
 
 const firestore = new Firestore({ projectId: GOOGLE_CLOUD_PROJECT });
+
+// Serve built frontend assets
+app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
 
 app.set('trust proxy', 1 /* number of proxies between user and server */);
 
@@ -542,6 +550,11 @@ app.post('/api-proxy', requireSecretKey, async (req, res) => {
     console.error(error)
     res.status(500).json({ error: error });
   }
+});
+
+// SPA fallback
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'frontend', 'dist', 'index.html'));
 });
 
 const server = app.listen(PORT, API_BACKEND_HOST, () => {
