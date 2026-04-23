@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Chunk, ChunkFeedbackItem, OhmLabel, LABEL_COLORS } from '../types.ts';
 import { Check, X, Plus, Save, MessageSquareWarning } from 'lucide-react';
 import { submitFeedback } from '../services/memoryService.ts';
@@ -17,6 +17,10 @@ export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ transcript, chunks
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFeedbackState({});
+  }, [chunks]);
 
   const handleFeedback = (index: number, status: 'accept' | 'reject') => {
     setFeedbackState(prev => ({ ...prev, [index]: status }));
@@ -42,13 +46,15 @@ export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ transcript, chunks
         .filter(([, status]) => status === 'accept' || status === 'reject')
         .map(([index, status]) => {
           const chunk = chunks[Number(index)];
+          if (!chunk) return null;
           return {
             text: chunk.text,
             label: chunk.label,
             status: status as 'accept' | 'reject',
             confidence: chunk.confidence
           };
-        });
+        })
+        .filter((item): item is ChunkFeedbackItem => item !== null);
 
       await submitFeedback({
         sessionId,
