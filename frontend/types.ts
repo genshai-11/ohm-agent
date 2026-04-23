@@ -1,4 +1,5 @@
 export type OhmLabel = 'GREEN' | 'BLUE' | 'RED' | 'PINK';
+export type LlmProvider = 'gemini' | 'customOpenAI';
 
 export interface Chunk {
   text: string;
@@ -13,6 +14,8 @@ export interface AgentRequest {
   transcript: string;
   model: 'gpt' | 'gemini' | 'auto';
   reactionDelayMs: number;
+  provider?: LlmProvider;
+  modelId?: string;
   context: {
     sessionId?: string;
     userId?: string;
@@ -49,6 +52,31 @@ export interface FeedbackPayload {
   transcript: string;
   chunkFeedback: ChunkFeedbackItem[];
   newChunks: NewChunkItem[];
+}
+
+export interface ProviderConfig {
+  enabled: boolean;
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+  hasApiKey?: boolean;
+}
+
+export interface AgentConfig {
+  defaultProvider: LlmProvider;
+  fallbackEnabled: boolean;
+  fallbackOrder: LlmProvider[];
+  providers: {
+    gemini: ProviderConfig;
+    customOpenAI: ProviderConfig;
+  };
+  updatedAt?: string;
+}
+
+export interface ModelOption {
+  id: string;
+  displayName: string;
+  provider: LlmProvider;
 }
 
 export interface DebugInfo {

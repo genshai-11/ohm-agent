@@ -11,6 +11,7 @@ import fetch from 'node-fetch';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Datastore } from '@google-cloud/datastore';
+import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -39,6 +40,8 @@ const SECRET_KEY = process?.env?.SECRET_KEY || '';
 const FEEDBACK_COLLECTION = process?.env?.FEEDBACK_COLLECTION || 'ohm_feedback_events';
 const MEMORY_COLLECTION = process?.env?.MEMORY_COLLECTION || 'ohm_memory_entries';
 const SESSION_COLLECTION = process?.env?.SESSION_COLLECTION || 'ohm_session_memory';
+const CONFIG_KIND = process?.env?.CONFIG_KIND || 'ohm_agent_config';
+const CONFIG_ID = process?.env?.CONFIG_ID || 'default';
 
 const datastore = new Datastore({ projectId: GOOGLE_CLOUD_PROJECT });
 
@@ -234,6 +237,236 @@ function requireSecretKey(req, res, next) {
   next();
 }
 
+const DEFAULT_AGENT_CONFIG = {
+  defaultProvider: 'gemini',
+  fallbackEnabled: true,
+  fallbackOrder: ['gemini', 'customOpenAI'],
+  providers: {
+    gemini: {
+      enabled: true,
+      model: 'gemini-2.5-flash',
+      apiKey: process?.env?.GEMINI_API_KEY || ''
+    },
+    customOpenAI: {
+      enabled: false,
+      model: 'gpt-4o-mini',
+      baseUrl: process?.env?.CUSTOM_OPENAI_BASE_URL || '',
+      apiKey: process?.env?.CUSTOM_OPENAI_API_KEY || ''
+    }
+  }
+};
+
+function mergeAgentConfig(storedConfig = {}) {
+  return {
+    defaultProvider: storedConfig.defaultProvider || DEFAULT_AGENT_CONFIG.defaultProvider,
+    fallbackEnabled: typeof storedConfig.fallbackEnabled === 'boolean' ? storedConfig.fallbackEnabled : DEFAULT_AGENT_CONFIG.fallbackEnabled,
+    fallbackOrder: Array.isArray(storedConfig.fallbackOrder) && storedConfig.fallbackOrder.length
+      ? storedConfig.fallbackOrder
+      : DEFAULT_AGENT_CONFIG.fallbackOrder,
+    providers: {
+      gemini: {
+        ...DEFAULT_AGENT_CONFIG.providers.gemini,
+        ...(storedConfig.providers?.gemini || {})
+      },
+      customOpenAI: {
+        ...DEFAULT_AGENT_CONFIG.providers.customOpenAI,
+        ...(storedConfig.providers?.customOpenAI || {})
+      }
+    },
+    updatedAt: storedConfig.updatedAt || null
+  };
+}
+
+function sanitizeConfigForClient(config) {
+  return {
+    ...config,
+    providers: {
+      gemini: {
+        ...config.providers.gemini,
+        apiKey: '',
+        hasApiKey: Boolean(config.providers.gemini.apiKey)
+      },
+      customOpenAI: {
+        ...config.providers.customOpenAI,
+        apiKey: '',
+        hasApiKey: Boolean(config.providers.customOpenAI.apiKey)
+      }
+    }
+  };
+}
+
+async function getAgentConfigEntity() {
+  const key = datastore.key([CONFIG_KIND, CONFIG_ID]);
+  const [entity] = await datastore.get(key);
+  return entity || {};
+}
+
+async function getAgentConfig() {
+  const stored = await getAgentConfigEntity();
+  return mergeAgentConfig(stored);
+}
+
+async function saveAgentConfig(patch = {}) {
+  const key = datastore.key([CONFIG_KIND, CONFIG_ID]);
+  const current = await getAgentConfig();
+
+  const next = mergeAgentConfig({
+    ...current,
+    ...patch,
+    providers: {
+      ...current.providers,
+      ...(patch.providers || {}),
+      gemini: {
+        ...current.providers.gemini,
+        ...(patch.providers?.gemini || {})
+      },
+      customOpenAI: {
+        ...current.providers.customOpenAI,
+        ...(patch.providers?.customOpenAI || {})
+      }
+    },
+    updatedAt: new Date().toISOString()
+  });
+
+  await datastore.save({ key, data: next });
+  return next;
+}
+
+function parseJsonArray(raw = '') {
+  if (!raw) return [];
+
+  const trimmed = `${raw}`.trim().replace(/^```json\s*/i, '').replace(/^```/i, '').replace(/```$/i, '').trim();
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed?.chunks)) return parsed.chunks;
+    return [];
+  } catch (_error) {
+    const match = trimmed.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    try {
+      const parsed = JSON.parse(match[0]);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_innerError) {
+      return [];
+    }
+  }
+}
+
+function buildPrompt(transcript, memoryHints = []) {
+  let prompt = `Transcript to analyze: "${transcript}"`;
+
+  if (memoryHints.length > 0) {
+    prompt += `\n\n[Memory Assist] Potential matches found in validated database:\n`;
+    memoryHints.forEach((hint) => {
+      prompt += `- "${hint.text}" (Suggested Label: ${hint.label}, Source: ${hint.source || 'unknown'})\n`;
+    });
+    prompt += `\nNote: Use these hints as strong priors, but verify contextually. Ignore false positive substrings.`;
+  }
+
+  return prompt;
+}
+
+async function fetchGeminiModels(apiKey) {
+  const defaults = [
+    { id: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', provider: 'gemini' },
+    { id: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', provider: 'gemini' }
+  ];
+
+  if (!apiKey) return defaults;
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+    if (!response.ok) return defaults;
+
+    const data = await response.json();
+    const models = (data.models || [])
+      .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map((m) => ({
+        id: `${m.name || ''}`.replace('models/', ''),
+        displayName: m.displayName || `${m.name || ''}`.replace('models/', ''),
+        provider: 'gemini'
+      }))
+      .filter((m) => m.id);
+
+    return models.length ? models : defaults;
+  } catch (_error) {
+    return defaults;
+  }
+}
+
+async function fetchCustomModels(baseUrl, apiKey) {
+  if (!baseUrl) return [];
+
+  const endpoint = `${baseUrl.replace(/\/$/, '')}/models`;
+  const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+
+  try {
+    const response = await fetch(endpoint, { headers });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data.data || [])
+      .map((m) => ({
+        id: m.id,
+        displayName: m.id,
+        provider: 'customOpenAI'
+      }))
+      .filter((m) => m.id);
+  } catch (_error) {
+    return [];
+  }
+}
+
+async function runGeminiGeneration({ prompt, systemPrompt, model, apiKey }) {
+  if (!apiKey) throw new Error('gemini_api_key_missing');
+
+  const client = new GoogleGenAI({ apiKey });
+  const response = await client.models.generateContent({
+    model,
+    contents: {
+      role: 'user',
+      parts: [{ text: prompt }]
+    },
+    config: {
+      systemInstruction: systemPrompt,
+      responseMimeType: 'application/json'
+    }
+  });
+
+  return parseJsonArray(response.text || '[]');
+}
+
+async function runCustomOpenAIGeneration({ prompt, systemPrompt, model, baseUrl, apiKey }) {
+  if (!baseUrl) throw new Error('custom_openai_base_url_missing');
+
+  const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `${prompt}\n\nReturn ONLY a JSON array with objects: text,label,confidence,reason.` }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`custom_openai_error_${response.status}:${text}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content || '[]';
+  return parseJsonArray(content);
+}
+
 async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
   if (!normalizeText(transcript)) return [];
 
@@ -308,6 +541,148 @@ async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
 
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true, service: 'ohm-agent-backend' });
+});
+
+app.get('/admin/config', requireSecretKey, async (_req, res) => {
+  try {
+    const config = await getAgentConfig();
+    return res.json({ config: sanitizeConfigForClient(config) });
+  } catch (error) {
+    console.error('[Admin] Failed to load config', error);
+    return res.status(500).json({ error: 'failed_to_load_config' });
+  }
+});
+
+app.post('/admin/config', requireSecretKey, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const current = await getAgentConfig();
+
+    const patch = {
+      defaultProvider: body.defaultProvider || current.defaultProvider,
+      fallbackEnabled: typeof body.fallbackEnabled === 'boolean' ? body.fallbackEnabled : current.fallbackEnabled,
+      fallbackOrder: Array.isArray(body.fallbackOrder) ? body.fallbackOrder : current.fallbackOrder,
+      providers: {
+        gemini: {
+          enabled: typeof body.providers?.gemini?.enabled === 'boolean' ? body.providers.gemini.enabled : current.providers.gemini.enabled,
+          model: body.providers?.gemini?.model || current.providers.gemini.model,
+          apiKey: body.providers?.gemini?.apiKey === '__CLEAR__'
+            ? ''
+            : (body.providers?.gemini?.apiKey?.trim() ? body.providers.gemini.apiKey.trim() : current.providers.gemini.apiKey)
+        },
+        customOpenAI: {
+          enabled: typeof body.providers?.customOpenAI?.enabled === 'boolean' ? body.providers.customOpenAI.enabled : current.providers.customOpenAI.enabled,
+          model: body.providers?.customOpenAI?.model || current.providers.customOpenAI.model,
+          baseUrl: body.providers?.customOpenAI?.baseUrl || current.providers.customOpenAI.baseUrl,
+          apiKey: body.providers?.customOpenAI?.apiKey === '__CLEAR__'
+            ? ''
+            : (body.providers?.customOpenAI?.apiKey?.trim() ? body.providers.customOpenAI.apiKey.trim() : current.providers.customOpenAI.apiKey)
+        }
+      }
+    };
+
+    const config = await saveAgentConfig(patch);
+    return res.json({ ok: true, config: sanitizeConfigForClient(config) });
+  } catch (error) {
+    console.error('[Admin] Failed to save config', error);
+    return res.status(500).json({ error: 'failed_to_save_config' });
+  }
+});
+
+app.get('/models', requireSecretKey, async (req, res) => {
+  try {
+    const provider = `${req.query.provider || ''}`;
+    const config = await getAgentConfig();
+
+    if (provider === 'customOpenAI') {
+      const models = await fetchCustomModels(config.providers.customOpenAI.baseUrl, config.providers.customOpenAI.apiKey);
+      return res.json({ models });
+    }
+
+    const models = await fetchGeminiModels(config.providers.gemini.apiKey);
+    return res.json({ models });
+  } catch (error) {
+    console.error('[Models] Failed to fetch models', error);
+    return res.status(500).json({ error: 'failed_to_fetch_models' });
+  }
+});
+
+app.post('/llm/generate-chunks', requireSecretKey, async (req, res) => {
+  try {
+    const {
+      transcript = '',
+      memoryHints = [],
+      provider,
+      model,
+      systemPrompt = ''
+    } = req.body || {};
+
+    if (!transcript.trim()) {
+      return res.status(400).json({ error: 'transcript is required' });
+    }
+
+    const config = await getAgentConfig();
+    const prompt = buildPrompt(transcript, memoryHints);
+
+    const providerOrder = [];
+    if (provider) providerOrder.push(provider);
+    providerOrder.push(config.defaultProvider);
+
+    if (config.fallbackEnabled) {
+      config.fallbackOrder.forEach((p) => providerOrder.push(p));
+    }
+
+    const tried = new Set();
+    const errors = [];
+
+    for (const currentProvider of providerOrder) {
+      if (!currentProvider || tried.has(currentProvider)) continue;
+      tried.add(currentProvider);
+
+      try {
+        let rawChunks = [];
+        let modelUsed = model || '';
+
+        if (currentProvider === 'customOpenAI') {
+          const cfg = config.providers.customOpenAI;
+          if (!cfg.enabled) throw new Error('provider_disabled_customOpenAI');
+          modelUsed = model || cfg.model;
+          rawChunks = await runCustomOpenAIGeneration({
+            prompt,
+            systemPrompt,
+            model: modelUsed,
+            baseUrl: cfg.baseUrl,
+            apiKey: cfg.apiKey
+          });
+        } else {
+          const cfg = config.providers.gemini;
+          if (!cfg.enabled) throw new Error('provider_disabled_gemini');
+          modelUsed = model || cfg.model;
+          rawChunks = await runGeminiGeneration({
+            prompt,
+            systemPrompt,
+            model: modelUsed,
+            apiKey: cfg.apiKey
+          });
+        }
+
+        return res.json({
+          ok: true,
+          providerUsed: currentProvider,
+          modelUsed,
+          fallbackUsed: currentProvider !== (provider || config.defaultProvider),
+          rawChunks
+        });
+      } catch (error) {
+        errors.push({ provider: currentProvider, message: error?.message || 'unknown_error' });
+      }
+    }
+
+    return res.status(502).json({ error: 'llm_generation_failed', details: errors });
+  } catch (error) {
+    console.error('[LLM] Failed to generate chunks', error);
+    return res.status(500).json({ error: 'failed_to_generate_chunks' });
+  }
 });
 
 app.get('/memory-hints', requireSecretKey, async (req, res) => {

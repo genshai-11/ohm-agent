@@ -1,6 +1,6 @@
 import { FeedbackPayload, MemoryHint } from '../types.ts';
 
-function getAppKeyFromUrl(): string {
+export function getAppKeyFromUrl(): string {
   return new URLSearchParams(window.location.search).get('key') || '';
 }
 

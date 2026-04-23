@@ -1,10 +1,7 @@
-import { GoogleGenAI, Type } from '@google/genai';
 import { AgentRequest, AgentResponse, Chunk, MemoryHint, OHM_WEIGHTS } from '../types.ts';
 import { SYSTEM_PROMPT } from '../constants.ts';
 import { KNOWN_PHRASES } from '../database.ts';
-import { fetchMemoryHints } from './memoryService.ts';
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY, vertexai: true });
+import { fetchMemoryHints, getAppKeyFromUrl } from './memoryService.ts';
 
 function calculateResponseCoefficient(delayMs: number): number {
   if (delayMs <= 2000) return 1.0;
@@ -23,6 +20,35 @@ function calculateLengthMetrics(wordCount: number, sentenceCount: number): { buc
   if (sentenceCount <= 3 && wordCount <= 60) return { bucket: 'medium', coeff: 2.0 };
   if (sentenceCount <= 5 && wordCount <= 110) return { bucket: 'long', coeff: 2.5 };
   return { bucket: 'overLong', coeff: 2.5 };
+}
+
+async function generateChunksViaBackend(params: {
+  transcript: string;
+  memoryHints: MemoryHint[];
+  provider?: string;
+  model?: string;
+}) {
+  const response = await fetch('/llm/generate-chunks', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-App-Key': getAppKeyFromUrl()
+    },
+    body: JSON.stringify({
+      transcript: params.transcript,
+      memoryHints: params.memoryHints,
+      provider: params.provider,
+      model: params.model,
+      systemPrompt: SYSTEM_PROMPT
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`backend_generation_failed_${response.status}: ${text}`);
+  }
+
+  return response.json();
 }
 
 export async function evaluateTranscript(request: AgentRequest): Promise<AgentResponse> {
@@ -63,46 +89,18 @@ export async function evaluateTranscript(request: AgentRequest): Promise<AgentRe
     promptContents += `\nNote: Use these hints as strong priors, but verify contextually. Ignore false positive substrings.`;
   }
 
-  // 2. Call Gemini (Detect -> Reason/Rerank)
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: {
-      role: 'user',
-      parts: [
-        {
-          text: promptContents,
-        }
-      ]
-    },
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            text: { type: Type.STRING, description: "The exact substring extracted" },
-            label: { type: Type.STRING, description: "GREEN, BLUE, RED, or PINK" },
-            confidence: { type: Type.NUMBER, description: "0.0 to 1.0" },
-            reason: { type: Type.STRING, description: "Explanation for the label" }
-          },
-          propertyOrdering: ["text", "label", "confidence", "reason"]
-        }
-      }
-    }
+  // 2. Call provider backend (Gemini / Custom OpenAI-compatible)
+  const generation = await generateChunksViaBackend({
+    transcript: request.transcript,
+    memoryHints,
+    provider: request.provider,
+    model: request.modelId
   });
 
   const endTime = performance.now();
   const elapsedMs = Math.round(endTime - startTime);
 
-  let rawChunks: Chunk[] = [];
-  try {
-    rawChunks = JSON.parse(response.text.trim());
-  } catch (e) {
-    console.error("Failed to parse Gemini response", e);
-    rawChunks = [];
-  }
+  const rawChunks: Chunk[] = Array.isArray(generation?.rawChunks) ? generation.rawChunks : [];
 
   // 3. Self-Check & Filtering
   const normalizedTranscript = request.transcript.toLowerCase().replace(/[.,!?]/g, '');
@@ -225,7 +223,7 @@ export async function evaluateTranscript(request: AgentRequest): Promise<AgentRe
     })),
     formula,
     totalOhm,
-    modelUsed: 'gemini-2.5-flash (memory-orchestrated)',
+    modelUsed: `${generation?.providerUsed || request.provider || 'gemini'}:${generation?.modelUsed || request.modelId || 'default'}${generation?.fallbackUsed ? ' (fallback)' : ''}`,
     baseOhm,
     lengthBucket,
     lengthCoefficient,
