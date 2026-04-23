@@ -235,8 +235,7 @@ function requireSecretKey(req, res, next) {
 }
 
 async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
-  const normalizedTranscript = normalizeText(transcript);
-  if (!normalizedTranscript) return [];
+  if (!normalizeText(transcript)) return [];
 
   const globalQuery = datastore
     .createQuery(MEMORY_COLLECTION)
@@ -262,7 +261,7 @@ async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
     const label = item.label || 'PINK';
     const normalizedText = normalizeText(text);
 
-    if (!text || !normalizedText || !normalizedTranscript.includes(normalizedText)) return;
+    if (!text || !normalizedText) return;
 
     const supportCount = Number(item.supportCount || 0);
     const rejectCount = Number(item.rejectCount || 0);
@@ -285,7 +284,7 @@ async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
     const action = item.action || 'accept';
     const normalizedText = normalizeText(text);
 
-    if (!text || !normalizedText || !normalizedTranscript.includes(normalizedText)) return;
+    if (!text || !normalizedText) return;
 
     const key = `${normalizedText}::${label}`;
     const prev = byKey.get(key);
