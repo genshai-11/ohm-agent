@@ -211,10 +211,29 @@ function normalizeText(text = '') {
   return `${text}`.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-function makeMemoryDocId(text, label = 'UNKNOWN') {
+function makeMemoryDocId(text) {
   const normalized = normalizeText(text);
   const encoded = Buffer.from(normalized).toString('base64url').slice(0, 160);
-  return `${label}__${encoded}`;
+  return `phrase__${encoded}`;
+}
+
+function stripDiacritics(value = '') {
+  return `${value}`
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function textMatchesTranscript(text = '', transcript = '') {
+  const rawText = `${text}`.trim().toLowerCase();
+  const rawTranscript = `${transcript}`.trim().toLowerCase();
+  if (!rawText || !rawTranscript) return false;
+
+  if (rawTranscript.includes(rawText)) return true;
+
+  const textNoAccent = stripDiacritics(rawText);
+  const transcriptNoAccent = stripDiacritics(rawTranscript);
+  return transcriptNoAccent.includes(textNoAccent);
 }
 
 function getClientKey(req) {
@@ -537,62 +556,77 @@ async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
     ? datastore
         .createQuery(FEEDBACK_COLLECTION)
         .filter('sessionId', '=', sessionId)
-        .limit(100)
+        .limit(200)
     : null;
 
-  const [globalRows, sessionRows] = await Promise.all([
+  const [globalRows, sessionRowsRaw] = await Promise.all([
     datastore.runQuery(globalQuery).then(([rows]) => rows || []),
     sessionQuery ? datastore.runQuery(sessionQuery).then(([rows]) => rows || []) : Promise.resolve([])
   ]);
 
-  const byKey = new Map();
+  const byPhrase = new Map();
 
   globalRows.forEach((item) => {
     const text = `${item.text || ''}`.trim();
-    const label = item.label || 'PINK';
+    const label = item.preferredLabel || item.label || 'PINK';
     const normalizedText = normalizeText(text);
 
-    if (!text || !normalizedText) return;
+    if (!text || !normalizedText || !textMatchesTranscript(text, transcript)) return;
 
     const supportCount = Number(item.supportCount || 0);
     const rejectCount = Number(item.rejectCount || 0);
     const score = Math.max(0, supportCount - rejectCount);
-    const key = `${normalizedText}::${label}`;
 
-    byKey.set(key, {
+    byPhrase.set(normalizedText, {
       text,
       label,
       source: 'global_db',
       supportCount,
       rejectCount,
-      score
+      score,
+      action: null
     });
   });
 
+  const sessionRows = [...sessionRowsRaw].sort((a, b) => {
+    const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  const latestActionByPhrase = new Map();
   sessionRows.forEach((item) => {
     const text = `${item.text || ''}`.trim();
-    const label = item.label || 'PINK';
-    const action = item.action || 'accept';
     const normalizedText = normalizeText(text);
-
     if (!text || !normalizedText) return;
+    if (!latestActionByPhrase.has(normalizedText)) {
+      latestActionByPhrase.set(normalizedText, item);
+    }
+  });
 
-    const key = `${normalizedText}::${label}`;
-    const prev = byKey.get(key);
-    const scoreBoost = action === 'reject' ? -2 : 4;
+  latestActionByPhrase.forEach((item, normalizedText) => {
+    const text = `${item.text || ''}`.trim();
+    const label = item.label || byPhrase.get(normalizedText)?.label || 'PINK';
+    const action = item.action || 'accept';
 
-    byKey.set(key, {
+    if (!text || !textMatchesTranscript(text, transcript)) return;
+
+    const prev = byPhrase.get(normalizedText);
+    const scoreBoost = action === 'reject' ? -6 : 8;
+
+    byPhrase.set(normalizedText, {
       text,
       label,
       source: 'session_feedback',
       supportCount: Number(prev?.supportCount || 0),
       rejectCount: Number(prev?.rejectCount || 0),
-      score: Number(prev?.score || 0) + scoreBoost
+      score: Number(prev?.score || 0) + scoreBoost,
+      action
     });
   });
 
-  return Array.from(byKey.values())
-    .filter((hint) => hint.score >= 0)
+  return Array.from(byPhrase.values())
+    .filter((hint) => hint.score >= 0 || hint.source === 'session_feedback')
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }
@@ -819,7 +853,7 @@ app.post('/feedback', async (req, res) => {
         }
       });
 
-      const memoryKey = datastore.key([MEMORY_COLLECTION, makeMemoryDocId(item.text, item.label)]);
+      const memoryKey = datastore.key([MEMORY_COLLECTION, makeMemoryDocId(item.text)]);
       const [existingMemory] = await datastore.get(memoryKey);
       const supportIncrement = item.action === 'reject' ? 0 : 1;
       const rejectIncrement = item.action === 'reject' ? 1 : 0;
@@ -829,9 +863,11 @@ app.post('/feedback', async (req, res) => {
         data: {
           text: item.text,
           normalizedText: normalizeText(item.text),
-          label: item.label,
+          label: existingMemory?.label || item.label,
+          preferredLabel: item.label,
           supportCount: Number(existingMemory?.supportCount || 0) + supportIncrement,
           rejectCount: Number(existingMemory?.rejectCount || 0) + rejectIncrement,
+          lastAction: item.action,
           lastSeenSessionId: sessionId,
           updatedAt: now
         }

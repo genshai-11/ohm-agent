@@ -32,6 +32,7 @@ export interface MemoryHint {
   label: OhmLabel;
   source: 'global_db' | 'session_feedback' | 'static_lexicon';
   score?: number;
+  action?: 'accept' | 'reject' | 'add' | null;
 }
 
 export interface ChunkFeedbackItem {

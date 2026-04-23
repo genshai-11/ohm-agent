@@ -109,16 +109,51 @@ export async function evaluateTranscript(request: AgentRequest): Promise<AgentRe
   const sentenceCount = request.transcript.split(/[.!?]+/).filter(s => s.trim().length > 0).length || 1;
 
   const dropReasons: string[] = [];
-  const validChunks = rawChunks.filter(chunk => {
-    if (!request.transcript.toLowerCase().includes(chunk.text.toLowerCase())) {
+
+  const normalizedRawChunks = rawChunks.map((chunk) => ({
+    ...chunk,
+    confidence: Number(chunk.confidence ?? 0.5)
+  }));
+
+  let validChunks = normalizedRawChunks.filter(chunk => {
+    if (!request.transcript.toLowerCase().includes(`${chunk.text || ''}`.toLowerCase())) {
       dropReasons.push(`Rejected '${chunk.text}': Not an exact substring.`);
       return false;
     }
-    if (!['GREEN', 'BLUE', 'RED', 'PINK'].includes(chunk.label)) {
+    if (!['GREEN', 'BLUE', 'RED', 'PINK'].includes(`${chunk.label}`)) {
       dropReasons.push(`Rejected '${chunk.text}': Invalid label ${chunk.label}.`);
       return false;
     }
     return true;
+  });
+
+  const rejectedFeedbackHints = memoryHints.filter(
+    (hint) => hint.source === 'session_feedback' && hint.action === 'reject'
+  );
+  if (rejectedFeedbackHints.length > 0) {
+    const rejectSet = new Set(rejectedFeedbackHints.map((hint) => hint.text.toLowerCase()));
+    validChunks = validChunks.filter((chunk) => {
+      const rejected = rejectSet.has(chunk.text.toLowerCase());
+      if (rejected) {
+        dropReasons.push(`Rejected '${chunk.text}': Blocked by session reject feedback.`);
+      }
+      return !rejected;
+    });
+  }
+
+  const enforcedHints = memoryHints.filter(
+    (hint) => hint.source === 'session_feedback' && hint.action !== 'reject'
+  );
+  enforcedHints.forEach((hint) => {
+    const exists = validChunks.some((chunk) => chunk.text.toLowerCase() === hint.text.toLowerCase());
+    if (!exists && request.transcript.toLowerCase().includes(hint.text.toLowerCase())) {
+      validChunks.push({
+        text: hint.text,
+        label: hint.label,
+        confidence: 0.99,
+        reason: 'Enforced from session feedback memory.'
+      } as Chunk);
+    }
   });
 
   // FIX: Corrected the startIndex logic bug here
