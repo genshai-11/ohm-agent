@@ -1,7 +1,8 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { AgentRequest, AgentResponse, Chunk, OHM_WEIGHTS } from '../types.ts';
+import { AgentRequest, AgentResponse, Chunk, MemoryHint, OHM_WEIGHTS } from '../types.ts';
 import { SYSTEM_PROMPT } from '../constants.ts';
 import { KNOWN_PHRASES } from '../database.ts';
+import { fetchMemoryHints } from './memoryService.ts';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY, vertexai: true });
 
@@ -29,16 +30,35 @@ export async function evaluateTranscript(request: AgentRequest): Promise<AgentRe
   
   // 1. Retrieve Memory (RAG Approach)
   const lowerTranscript = request.transcript.toLowerCase();
-  const memoryHints = KNOWN_PHRASES.filter(phrase => 
-    lowerTranscript.includes(phrase.text.toLowerCase())
-  );
+  const staticHints: MemoryHint[] = KNOWN_PHRASES
+    .filter(phrase => lowerTranscript.includes(phrase.text.toLowerCase()))
+    .map((phrase) => ({ ...phrase, source: 'static_lexicon' }));
+
+  let dynamicHints: MemoryHint[] = [];
+  if (request.flags.useMemoryAssist) {
+    try {
+      dynamicHints = await fetchMemoryHints(request.transcript, request.context.sessionId);
+    } catch (error) {
+      console.warn('[Memory] dynamic hints unavailable, falling back to static lexicon', error);
+    }
+  }
+
+  const mergedHintMap = new Map<string, MemoryHint>();
+  [...dynamicHints, ...staticHints].forEach((hint) => {
+    const key = `${hint.text.toLowerCase()}::${hint.label}`;
+    if (!mergedHintMap.has(key)) {
+      mergedHintMap.set(key, hint);
+    }
+  });
+
+  const memoryHints = Array.from(mergedHintMap.values());
 
   let promptContents = `Transcript to analyze: "${request.transcript}"`;
   
   if (request.flags.useMemoryAssist && memoryHints.length > 0) {
     promptContents += `\n\n[Memory Assist] Potential matches found in validated database:\n`;
     memoryHints.forEach(hint => {
-      promptContents += `- "${hint.text}" (Suggested Label: ${hint.label})\n`;
+      promptContents += `- "${hint.text}" (Suggested Label: ${hint.label}, Source: ${hint.source})\n`;
     });
     promptContents += `\nNote: Use these hints as strong priors, but verify contextually. Ignore false positive substrings.`;
   }

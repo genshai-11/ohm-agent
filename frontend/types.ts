@@ -24,6 +24,33 @@ export interface AgentRequest {
   };
 }
 
+export interface MemoryHint {
+  text: string;
+  label: OhmLabel;
+  source: 'global_db' | 'session_feedback' | 'static_lexicon';
+  score?: number;
+}
+
+export interface ChunkFeedbackItem {
+  text: string;
+  label: OhmLabel;
+  status: 'accept' | 'reject';
+  confidence?: number;
+}
+
+export interface NewChunkItem {
+  text: string;
+  label: OhmLabel;
+}
+
+export interface FeedbackPayload {
+  sessionId: string;
+  userId?: string;
+  transcript: string;
+  chunkFeedback: ChunkFeedbackItem[];
+  newChunks: NewChunkItem[];
+}
+
 export interface DebugInfo {
   rawChunkCount: number;
   dropReasons: string[];

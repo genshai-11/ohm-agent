@@ -10,6 +10,7 @@ import { GoogleAuth } from 'google-auth-library';
 import fetch from 'node-fetch';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
+import { Firestore, FieldValue } from '@google-cloud/firestore';
 
 const app = express();
 app.use(express.json({limit: process?.env?.API_PAYLOAD_MAX_SIZE || "7mb"}));
@@ -28,6 +29,13 @@ if (!PROXY_HEADER) {
   console.error("Error: Environment variables PROXY_HEADER must be set.");
   process.exit(1);
 }
+
+const SECRET_KEY = process?.env?.SECRET_KEY || '';
+const FEEDBACK_COLLECTION = process?.env?.FEEDBACK_COLLECTION || 'ohm_feedback_events';
+const MEMORY_COLLECTION = process?.env?.MEMORY_COLLECTION || 'ohm_memory_entries';
+const SESSION_COLLECTION = process?.env?.SESSION_COLLECTION || 'ohm_session_memory';
+
+const firestore = new Firestore({ projectId: GOOGLE_CLOUD_PROJECT });
 
 app.set('trust proxy', 1 /* number of proxies between user and server */);
 
@@ -187,8 +195,234 @@ function getRequestHeaders(accessToken) {
   };
 }
 
+function normalizeText(text = '') {
+  return `${text}`.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function makeMemoryDocId(text, label = 'UNKNOWN') {
+  const normalized = normalizeText(text);
+  const encoded = Buffer.from(normalized).toString('base64url').slice(0, 160);
+  return `${label}__${encoded}`;
+}
+
+function getClientKey(req) {
+  return req.headers['x-app-key'] || req.query?.key || null;
+}
+
+function requireSecretKey(req, res, next) {
+  if (!SECRET_KEY) return next();
+
+  const clientKey = getClientKey(req);
+  if (clientKey !== SECRET_KEY) {
+    return res.status(401).json({
+      error: {
+        message: clientKey ? `The provided key ${clientKey} is invalid` : 'No secret key provided in the URL',
+        code: 401,
+        status: ''
+      }
+    });
+  }
+
+  next();
+}
+
+async function getMemoryHints({ transcript, sessionId, limit = 25 }) {
+  const normalizedTranscript = normalizeText(transcript);
+  if (!normalizedTranscript) return [];
+
+  const [globalSnap, sessionSnap] = await Promise.all([
+    firestore
+      .collection(MEMORY_COLLECTION)
+      .orderBy('supportCount', 'desc')
+      .limit(300)
+      .get(),
+    sessionId
+      ? firestore
+          .collection(FEEDBACK_COLLECTION)
+          .where('sessionId', '==', sessionId)
+          .orderBy('createdAt', 'desc')
+          .limit(100)
+          .get()
+      : Promise.resolve(null)
+  ]);
+
+  const byKey = new Map();
+
+  globalSnap.docs.forEach((doc) => {
+    const item = doc.data();
+    const text = `${item.text || ''}`.trim();
+    const label = item.label || 'PINK';
+    const normalizedText = normalizeText(text);
+
+    if (!text || !normalizedText || !normalizedTranscript.includes(normalizedText)) return;
+
+    const supportCount = Number(item.supportCount || 0);
+    const rejectCount = Number(item.rejectCount || 0);
+    const score = Math.max(0, supportCount - rejectCount);
+    const key = `${normalizedText}::${label}`;
+
+    byKey.set(key, {
+      text,
+      label,
+      source: 'global_db',
+      supportCount,
+      rejectCount,
+      score
+    });
+  });
+
+  if (sessionSnap) {
+    sessionSnap.docs.forEach((doc) => {
+      const item = doc.data();
+      const text = `${item.text || ''}`.trim();
+      const label = item.label || 'PINK';
+      const action = item.action || 'accept';
+      const normalizedText = normalizeText(text);
+
+      if (!text || !normalizedText || !normalizedTranscript.includes(normalizedText)) return;
+
+      const key = `${normalizedText}::${label}`;
+      const prev = byKey.get(key);
+      const scoreBoost = action === 'reject' ? -2 : 4;
+
+      byKey.set(key, {
+        text,
+        label,
+        source: 'session_feedback',
+        supportCount: Number(prev?.supportCount || 0),
+        rejectCount: Number(prev?.rejectCount || 0),
+        score: Number(prev?.score || 0) + scoreBoost
+      });
+    });
+  }
+
+  return Array.from(byKey.values())
+    .filter((hint) => hint.score >= 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+app.get('/healthz', (_req, res) => {
+  res.json({ ok: true, service: 'ohm-agent-backend' });
+});
+
+app.get('/memory-hints', requireSecretKey, async (req, res) => {
+  try {
+    const transcript = `${req.query.transcript || ''}`;
+    const sessionId = `${req.query.sessionId || ''}`;
+    const limit = Number(req.query.limit || 25);
+
+    if (!transcript.trim()) {
+      return res.status(400).json({ error: 'transcript is required' });
+    }
+
+    const hints = await getMemoryHints({ transcript, sessionId, limit: Math.min(Math.max(limit, 1), 50) });
+    return res.json({ hints, count: hints.length });
+  } catch (error) {
+    console.error('[Memory] Failed to retrieve memory hints', error);
+    return res.status(500).json({ error: 'failed_to_get_memory_hints' });
+  }
+});
+
+app.post('/feedback', requireSecretKey, async (req, res) => {
+  try {
+    const {
+      sessionId,
+      userId,
+      transcript,
+      chunkFeedback = [],
+      newChunks = []
+    } = req.body || {};
+
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    const batch = firestore.batch();
+    const now = FieldValue.serverTimestamp();
+
+    const feedbackItems = [];
+
+    chunkFeedback.forEach((item) => {
+      if (!item?.text || !item?.label || !item?.status) return;
+      feedbackItems.push({
+        text: `${item.text}`.trim(),
+        label: item.label,
+        action: item.status,
+        confidence: Number(item.confidence ?? 0)
+      });
+    });
+
+    newChunks.forEach((item) => {
+      if (!item?.text || !item?.label) return;
+      feedbackItems.push({
+        text: `${item.text}`.trim(),
+        label: item.label,
+        action: 'add',
+        confidence: 1
+      });
+    });
+
+    if (feedbackItems.length === 0) {
+      return res.status(400).json({ error: 'No feedback payload provided' });
+    }
+
+    feedbackItems.forEach((item) => {
+      const feedbackRef = firestore.collection(FEEDBACK_COLLECTION).doc();
+      batch.set(feedbackRef, {
+        sessionId,
+        userId: userId || null,
+        transcript: transcript || '',
+        text: item.text,
+        label: item.label,
+        action: item.action,
+        confidence: item.confidence,
+        createdAt: now
+      });
+
+      const memoryRef = firestore.collection(MEMORY_COLLECTION).doc(makeMemoryDocId(item.text, item.label));
+      const supportIncrement = item.action === 'reject' ? 0 : 1;
+      const rejectIncrement = item.action === 'reject' ? 1 : 0;
+
+      batch.set(
+        memoryRef,
+        {
+          text: item.text,
+          normalizedText: normalizeText(item.text),
+          label: item.label,
+          supportCount: FieldValue.increment(supportIncrement),
+          rejectCount: FieldValue.increment(rejectIncrement),
+          lastSeenSessionId: sessionId,
+          updatedAt: now
+        },
+        { merge: true }
+      );
+    });
+
+    const sessionRef = firestore.collection(SESSION_COLLECTION).doc(sessionId);
+    batch.set(
+      sessionRef,
+      {
+        sessionId,
+        userId: userId || null,
+        lastTranscript: transcript || '',
+        lastFeedbackAt: now,
+        feedbackCount: FieldValue.increment(feedbackItems.length),
+        updatedAt: now
+      },
+      { merge: true }
+    );
+
+    await batch.commit();
+    return res.json({ ok: true, saved: feedbackItems.length });
+  } catch (error) {
+    console.error('[Feedback] Failed to persist feedback', error);
+    return res.status(500).json({ error: 'failed_to_save_feedback' });
+  }
+});
+
 // --- Proxy Endpoint ---
-app.post('/api-proxy', async (req, res) => {
+app.post('/api-proxy', requireSecretKey, async (req, res) => {
 
   // Check for the custom header added by the shim
   if (req.headers['x-app-proxy'] !== PROXY_HEADER) {
@@ -321,7 +555,15 @@ server.on('upgrade', async (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
   if (url.pathname === '/ws-proxy') {
-    
+    if (SECRET_KEY) {
+      const clientKey = url.searchParams.get('key');
+      if (clientKey !== SECRET_KEY) {
+        console.log('[Node Proxy] Invalid or missing secret key for websocket');
+        socket.destroy();
+        return;
+      }
+    }
+
     let targetUrl = url.searchParams.get('target');
     if (!targetUrl) {
       console.log('[Node Proxy] Missing target URL');

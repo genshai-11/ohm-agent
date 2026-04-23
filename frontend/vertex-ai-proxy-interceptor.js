@@ -71,12 +71,13 @@
     const inputUrl = typeof url === 'string' ? url : (url instanceof URL ? url.href : null);
 
     if (inputUrl && isValidUrl(inputUrl)) {
-      
+      const secretKey = new URLSearchParams(window.location.search).get('key');
       console.log('[Vertex AI Proxy Shim] Intercepted Vertex WebSocket request:', inputUrl);
       const targetUrl = encodeURIComponent(inputUrl);
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = window.location.host;
-      const proxyUrl = `${protocol}//${host}/ws-proxy?target=${targetUrl}`;
+      const keyParam = secretKey ? `&key=${encodeURIComponent(secretKey)}` : '';
+      const proxyUrl = `${protocol}//${host}/ws-proxy?target=${targetUrl}${keyParam}`;
       return new originalWebSocket(proxyUrl, protocols);
     }
     return new originalWebSocket(url, protocols);
@@ -91,6 +92,7 @@
 
   window.fetch = async function(url, options) {
 
+    const secretKey = new URLSearchParams(window.location.search).get('key');
     const inputUrl = typeof url === 'string' ? url : (url instanceof Request ? url.url : null);
     const normalizedUrl = (typeof inputUrl === 'string') ? inputUrl.split('?')[0] : null;
     // Check if the URL matches the patterns of Vertex AI APIs.
@@ -114,6 +116,7 @@
             'Content-Type': 'application/json',
             // Add a random header to identify these proxied requests on the Node.js backend.
             'X-App-Proxy': 'kilATazLlsV-iL4JYdpjg5vSzzHMhEpz',
+            'X-App-Key': secretKey ?? '',
           },
           body: JSON.stringify(requestDetails),
         };

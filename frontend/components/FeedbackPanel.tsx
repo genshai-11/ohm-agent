@@ -1,18 +1,22 @@
 import React, { useState } from 'react';
-import { Chunk, OhmLabel, LABEL_COLORS } from '../types.ts';
+import { Chunk, ChunkFeedbackItem, OhmLabel, LABEL_COLORS } from '../types.ts';
 import { Check, X, Plus, Save, MessageSquareWarning } from 'lucide-react';
+import { submitFeedback } from '../services/memoryService.ts';
 
 interface FeedbackPanelProps {
   transcript: string;
   chunks: Chunk[];
+  sessionId: string;
 }
 
-export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ transcript, chunks }) => {
+export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ transcript, chunks, sessionId }) => {
   const [feedbackState, setFeedbackState] = useState<Record<number, 'accept' | 'reject' | null>>({});
   const [newChunks, setNewChunks] = useState<{ text: string; label: OhmLabel }[]>([]);
   const [newText, setNewText] = useState('');
   const [newLabel, setNewLabel] = useState<OhmLabel>('GREEN');
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const handleFeedback = (index: number, status: 'accept' | 'reject') => {
     setFeedbackState(prev => ({ ...prev, [index]: status }));
@@ -29,13 +33,38 @@ export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ transcript, chunks
     setNewText('');
   };
 
-  const handleSubmit = () => {
-    // Simulate saving to Firestore `ohm_feedback_events` and updating `ohm_memory_entries`
-    console.log("Submitting Feedback to Database...");
-    console.log("Accepted/Rejected Chunks:", feedbackState);
-    console.log("Newly Added Chunks:", newChunks);
-    setIsSubmitted(true);
-    setTimeout(() => setIsSubmitted(false), 3000);
+  const handleSubmit = async () => {
+    setSubmitError(null);
+    setIsSaving(true);
+
+    try {
+      const chunkFeedback: ChunkFeedbackItem[] = Object.entries(feedbackState)
+        .filter(([, status]) => status === 'accept' || status === 'reject')
+        .map(([index, status]) => {
+          const chunk = chunks[Number(index)];
+          return {
+            text: chunk.text,
+            label: chunk.label,
+            status: status as 'accept' | 'reject',
+            confidence: chunk.confidence
+          };
+        });
+
+      await submitFeedback({
+        sessionId,
+        transcript,
+        chunkFeedback,
+        newChunks
+      });
+
+      setIsSubmitted(true);
+      setTimeout(() => setIsSubmitted(false), 3000);
+    } catch (error: any) {
+      console.error('Failed to submit feedback', error);
+      setSubmitError(error?.message || 'Failed to submit feedback');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -145,12 +174,18 @@ export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ transcript, chunks
         <div className="pt-4">
           <button 
             onClick={handleSubmit}
-            className="w-full bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-semibold py-3 px-4 rounded-lg transition-colors flex justify-center items-center gap-2"
+            disabled={isSaving}
+            className="w-full bg-indigo-100 hover:bg-indigo-200 disabled:bg-slate-100 disabled:text-slate-400 text-indigo-700 font-semibold py-3 px-4 rounded-lg transition-colors flex justify-center items-center gap-2"
           >
             {isSubmitted ? (
               <>
                 <Check className="w-5 h-5" />
                 Đã lưu Feedback vào Database!
+              </>
+            ) : isSaving ? (
+              <>
+                <Save className="w-5 h-5 animate-pulse" />
+                Đang lưu Feedback...
               </>
             ) : (
               <>
@@ -159,6 +194,10 @@ export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ transcript, chunks
               </>
             )}
           </button>
+
+          {submitError && (
+            <p className="text-sm text-red-600 mt-2">{submitError}</p>
+          )}
         </div>
 
       </div>

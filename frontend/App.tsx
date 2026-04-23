@@ -13,7 +13,21 @@ const SAMPLE_TRANSCRIPTS = [
   "Khi chiếc thuyền cứu hộ lật giữa cơn giông và mọi người đều tưởng chúng tôi sẽ mất mạng trong gang tấc, tôi vẫn nắm tay người bạn của mình và nói rằng nếu sau biến cố này chúng tôi còn sống để chọn một cuộc đời khác, thì tui chẳng có gì phải hối hận cả, vì ở khoảnh khắc hiểm nghèo nhất, chúng tôi đã sống thật lòng và can đảm."
 ];
 
+function getOrCreateSessionId(): string {
+  const storageKey = 'ohm_agent_session_id';
+  const existing = localStorage.getItem(storageKey);
+  if (existing) return existing;
+
+  const created = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+    ? crypto.randomUUID()
+    : `sess_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+  localStorage.setItem(storageKey, created);
+  return created;
+}
+
 export default function App() {
+  const [sessionId] = useState<string>(() => getOrCreateSessionId());
   const [transcript, setTranscript] = useState(SAMPLE_TRANSCRIPTS[0]);
   const [reactionDelay, setReactionDelay] = useState<number>(1500);
   const [isLoading, setIsLoading] = useState(false);
@@ -30,7 +44,7 @@ export default function App() {
       transcript,
       model: 'gemini',
       reactionDelayMs: reactionDelay,
-      context: { language: 'vi' },
+      context: { language: 'vi', sessionId },
       flags: { useMemoryAssist: true, returnDebug: true }
     };
 
@@ -43,7 +57,7 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [transcript, reactionDelay]);
+  }, [transcript, reactionDelay, sessionId]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8">
@@ -196,7 +210,7 @@ export default function App() {
                 </div>
 
                 {/* Human Review Gate (Feedback Panel) */}
-                <FeedbackPanel transcript={result.transcriptRaw} chunks={result.chunks} />
+                <FeedbackPanel transcript={result.transcriptRaw} chunks={result.chunks} sessionId={sessionId} />
 
                 {result.debug && (
                   <div className="bg-slate-800 p-6 rounded-xl shadow-sm text-slate-300 space-y-4">
