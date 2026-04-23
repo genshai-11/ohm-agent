@@ -419,22 +419,53 @@ async function fetchCustomModels(baseUrl, apiKey) {
 }
 
 async function runGeminiGeneration({ prompt, systemPrompt, model, apiKey }) {
-  if (!apiKey) throw new Error('gemini_api_key_missing');
+  if (apiKey) {
+    const client = new GoogleGenAI({ apiKey });
+    const response = await client.models.generateContent({
+      model,
+      contents: {
+        role: 'user',
+        parts: [{ text: prompt }]
+      },
+      config: {
+        systemInstruction: systemPrompt,
+        responseMimeType: 'application/json'
+      }
+    });
 
-  const client = new GoogleGenAI({ apiKey });
-  const response = await client.models.generateContent({
-    model,
-    contents: {
-      role: 'user',
-      parts: [{ text: prompt }]
+    return parseJsonArray(response.text || '[]');
+  }
+
+  // Default path: use Vertex AI with service account (no API key required)
+  const accessToken = await getAccessToken();
+  if (!accessToken) {
+    throw new Error('gemini_vertex_auth_failed');
+  }
+
+  const endpoint = `https://aiplatform.googleapis.com/v1/projects/${GOOGLE_CLOUD_PROJECT}/locations/${GOOGLE_CLOUD_LOCATION}/publishers/google/models/${model}:generateContent`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
     },
-    config: {
-      systemInstruction: systemPrompt,
-      responseMimeType: 'application/json'
-    }
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      systemInstruction: { role: 'system', parts: [{ text: systemPrompt }] },
+      generationConfig: {
+        temperature: 0.2
+      }
+    })
   });
 
-  return parseJsonArray(response.text || '[]');
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`gemini_vertex_error_${response.status}:${text}`);
+  }
+
+  const data = await response.json();
+  const outputText = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '[]';
+  return parseJsonArray(outputText);
 }
 
 async function runCustomOpenAIGeneration({ prompt, systemPrompt, model, baseUrl, apiKey }) {
