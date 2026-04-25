@@ -93,7 +93,15 @@ export class ScoringEngine {
   }
 
   getConfig(): ScoringConfig {
-    return { ...this.config };
+    return {
+      ...this.config,
+      weights: { ...this.config.weights },
+      timing: { ...this.config.timing },
+      difficulty: {
+        weights: { ...this.config.difficulty.weights },
+        lengthBuckets: this.config.difficulty.lengthBuckets.map(b => ({ ...b })),
+      },
+    };
   }
 
   /**
@@ -136,8 +144,37 @@ export class ScoringEngine {
 
       const roundNumber = match.currentRound + 1;
 
-      // Build player identities and roles
+      // Validate player IDs
       const players = match.players;
+      if (input.captainPlayerId === input.crewPlayerId) {
+        return {
+          success: false,
+          error: {
+            category: 'invalid_input',
+            message: 'captainPlayerId and crewPlayerId must be different',
+          },
+        };
+      }
+      if (!players.some(p => p.playerId === input.captainPlayerId)) {
+        return {
+          success: false,
+          error: {
+            category: 'invalid_input',
+            message: `Captain player ${input.captainPlayerId} is not in this match`,
+          },
+        };
+      }
+      if (!players.some(p => p.playerId === input.crewPlayerId)) {
+        return {
+          success: false,
+          error: {
+            category: 'invalid_input',
+            message: `Crew player ${input.crewPlayerId} is not in this match`,
+          },
+        };
+      }
+
+      // Build roles for round
       const rolesForRound: Record<string, PlayerRole> = {
         [input.captainPlayerId]: 'captain',
         [input.crewPlayerId]: 'crew',

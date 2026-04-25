@@ -122,6 +122,58 @@ describe('ScoringEngine (Integration)', () => {
     expect(r2.matchState.playerScores['p2'].roundsPlayed).toBe(2);
   });
 
+  it('should reject duplicate player IDs', async () => {
+    const engine = new ScoringEngine();
+    const players = [
+      { playerId: 'p1', displayName: 'P1' },
+      { playerId: 'p2', displayName: 'P2' },
+    ];
+    const match = await engine.createMatch('faceoff', players);
+
+    const result = await engine.scoreRound({
+      matchId: match.matchId,
+      mode: 'faceoff',
+      captainPlayerId: 'p1',
+      crewPlayerId: 'p1',
+      captainTranscript: 'Chào.',
+      crewTranscript: 'Hi.',
+      captainStopTimestamp: 0,
+      crewStartTimestamp: 500,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.category).toBe('invalid_input');
+      expect(result.error.message).toContain('different');
+    }
+  });
+
+  it('should reject player IDs not in match', async () => {
+    const engine = new ScoringEngine();
+    const players = [
+      { playerId: 'p1', displayName: 'P1' },
+      { playerId: 'p2', displayName: 'P2' },
+    ];
+    const match = await engine.createMatch('faceoff', players);
+
+    const result = await engine.scoreRound({
+      matchId: match.matchId,
+      mode: 'faceoff',
+      captainPlayerId: 'p1',
+      crewPlayerId: 'unknown',
+      captainTranscript: 'Chào.',
+      crewTranscript: 'Hi.',
+      captainStopTimestamp: 0,
+      crewStartTimestamp: 500,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.category).toBe('invalid_input');
+      expect(result.error.message).toContain('not in this match');
+    }
+  });
+
   it('should return error for non-existent match', async () => {
     const engine = new ScoringEngine();
 
