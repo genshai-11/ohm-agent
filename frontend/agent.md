@@ -18,7 +18,7 @@ Trong hệ thống này, **R là sự cản trở (Resistance) khi dịch một 
 ## 3. Có thật sự hiểu cách cho điểm không?
 Cách cho điểm của OHM là một **ma trận 3 chiều**:
 `Total OHM = Base × Length × Response_Coefficient`
-- **Base (Chất lượng - Độ cản trở):** Tổng trọng số của các nhãn (RED=9, BLUE=7, GREEN=5, PINK=3). Đánh giá độ phong phú và độ khó dịch của từ vựng.
+- **Base (Chất lượng - Độ cản trở):** Tổng trọng số của các nhãn (GREEN=3, BLUE=5, RED=7, PINK=9). Đánh giá độ phong phú và độ khó dịch của từ vựng.
 - **Length (Cấu trúc):** Hệ số thưởng (1.0 đến 2.5) dựa trên độ dài và số câu. Thưởng cho việc diễn đạt ý tưởng phức tạp.
 - **Response Coefficient (Tốc độ):** Hệ số phạt (1.0 xuống 0.33) nếu phản xạ chậm. Trừng phạt sự ấp úng.
 

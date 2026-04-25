@@ -49,7 +49,7 @@ Hệ thống tính toán 3 chỉ số để ra điểm OHM cuối cùng:
 
 1. **Base OHM (Chất lượng từ vựng):**
    - Cộng dồn điểm của các chunks hợp lệ.
-   - Trọng số: `RED = 9`, `BLUE = 7`, `GREEN = 5`, `PINK = 3`.
+   - Trọng số: `GREEN = 3`, `BLUE = 5`, `RED = 7`, `PINK = 9`.
 
 2. **Length Coefficient (Hệ số cấu trúc):**
    - Đếm số từ (`wordCount`) và số câu (`sentenceCount`).

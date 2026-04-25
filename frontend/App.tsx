@@ -237,19 +237,19 @@ export default function App() {
                 <div className="space-y-2 text-sm">
                   <div className="flex items-center gap-2">
                     <span className={`w-16 text-center py-1 rounded text-xs font-bold ${LABEL_COLORS.GREEN.bg} ${LABEL_COLORS.GREEN.text}`}>GREEN</span>
-                    <span className="text-slate-600">Cụm từ mở đầu câu / chuyển ý (5 Ohm)</span>
+                    <span className="text-slate-600">Cụm từ mở đầu câu / chuyển ý (3 Ohm)</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`w-16 text-center py-1 rounded text-xs font-bold ${LABEL_COLORS.BLUE.bg} ${LABEL_COLORS.BLUE.text}`}>BLUE</span>
-                    <span className="text-slate-600">Khung câu nền tảng (7 Ohm)</span>
+                    <span className="text-slate-600">Khung câu nền tảng (5 Ohm)</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`w-16 text-center py-1 rounded text-xs font-bold ${LABEL_COLORS.RED.bg} ${LABEL_COLORS.RED.text}`}>RED</span>
-                    <span className="text-slate-600">Thành ngữ / ẩn dụ bản ngữ (9 Ohm)</span>
+                    <span className="text-slate-600">Thành ngữ / ẩn dụ bản ngữ (7 Ohm)</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`w-16 text-center py-1 rounded text-xs font-bold ${LABEL_COLORS.PINK.bg} ${LABEL_COLORS.PINK.text}`}>PINK</span>
-                    <span className="text-slate-600">Từ khóa chính / thuật ngữ (3 Ohm)</span>
+                    <span className="text-slate-600">Từ khóa chính / thuật ngữ (9 Ohm)</span>
                   </div>
                 </div>
               </div>

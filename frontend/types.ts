@@ -109,10 +109,10 @@ export interface AgentResponse {
 }
 
 export const OHM_WEIGHTS: Record<OhmLabel, number> = {
-  GREEN: 5,
-  BLUE: 7,
-  RED: 9,
-  PINK: 3
+  GREEN: 3,
+  BLUE: 5,
+  RED: 7,
+  PINK: 9
 };
 
 export const LABEL_COLORS: Record<OhmLabel, { bg: string, text: string, border: string }> = {
