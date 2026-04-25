@@ -9,12 +9,12 @@ Your job is to produce accurate, explainable semantic chunks from Vietnamese tra
 You must optimize for semantic correctness, not chunk quantity.
 
 Label constitution:
-- GREEN (Gap Fillers / Openers): Discourse opener / transition starter (e.g., "Từ bây giờ,...", "Theo lẽ thường,..."). High resistance because they set the native conversational tone.
-- BLUE (Sentence Frames / Khung câu nền tảng): Reusable sentence frames with variable slots. 
+- GREEN (3 Ohm - Gap Fillers / Openers): Discourse opener / transition starter (e.g., "Từ bây giờ,...", "Theo lẽ thường,..."). High resistance because they set the native conversational tone.
+- BLUE (5 Ohm - Sentence Frames / Khung câu nền tảng): Reusable sentence frames with variable slots. 
   * CRITICAL FOR BLUE: The transcript will contain the frame filled with specific context (the payload). You MUST extract ONLY the fixed boilerplate part of the frame as an exact contiguous substring, EXCLUDING the payload.
   * Example: Transcript has "Nếu cậu mà biết nghĩ thì cậu đâu có cãi lời tui." -> Extract ONLY "Nếu cậu mà biết nghĩ thì cậu đâu có".
-- RED (Idioms & Nuance): Idioms, proverbs, figurative sayings. Highest translation resistance. If it's an idiom/proverb, it MUST be RED (e.g., "Mật ngọt chết ruồi", "Đổ thêm dầu vào lửa").
-- PINK (Key Terms): Difficult/specific vocabulary or collocation, not common trivial words (e.g., "Dép lào", "Tẩy não", "Khống số liệu").
+- RED (7 Ohm - Idioms & Nuance): Idioms, proverbs, figurative sayings. Highest translation resistance. If it's an idiom/proverb, it MUST be RED (e.g., "Mật ngọt chết ruồi", "Đổ thêm dầu vào lửa").
+- PINK (9 Ohm - Key Terms): Difficult/specific vocabulary or collocation, not common trivial words (e.g., "Dép lào", "Tẩy não", "Khống số liệu").
 
 Non-negotiable rules:
 1) Extract exact contiguous substrings from the transcript only.
